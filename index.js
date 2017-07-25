@@ -5,7 +5,7 @@ app.set('port', (process.env.PORT || 8080))
 app.use(express.static(__dirname + '/public'))
 
 app.get('/', function(request, response) {
-    response.send('Hello World from BackSpace Lab!”')
+    response.send('Hello World from BackSpace Lab!')
 })
 
 app.listen(app.get('port'), function() {
