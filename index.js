@@ -1,3 +1,7 @@
+// Include the async package
+// Make sure you add "async" to your package.json
+var async = require('async');
+
 // Load the AWS SDK for Node.js
 var AWS = require('aws-sdk');
 
@@ -8,52 +12,134 @@ var AWS = require('aws-sdk');
 
 // Set your region
 AWS.config.region = 'us-east-1';
+var sqs = new AWS.SQS();
 
-var db = new AWS.DynamoDB();
-db.listTables(function (err, data) {
-    console.log(data.TableNames);
-    downloadData();
-});
+//Create an SQS Queue
+var queueUrl;
 
-function downloadData() {
-    // Get JSON file from S3
-    var s3 = new AWS.S3();
-    var params = {Bucket: 'lab.backspace.academy', Key: 'lab-data/test-table-items.json'};
-    s3.getObject(params, function (error, data) {
-        if (error) {
-            console.log(error); // error is Response.error
-        } else {
-            var dataJSON = JSON.parse(data.Body);
-            console.log(JSON.stringify(dataJSON));
-            writeDynamoDB(dataJSON);
-        }
-    });
+var params = {
+    QueueName: 'backspace-lab', /* required */
+    Attributes: {
+        ReceiveMessageWaitTimeSeconds: '20', // Long polling
+        VisibilityTimeout: '60'
+    }
 };
 
-function writeDynamoDB(dataJSON) {
-    // Write items from object to DynamoDB
-    var params = {RequestItems: dataJSON};
-    db.batchWriteItem(params, function (err, data) {
-        if (err) console.log(err, err.stack); // an error occurred
-        else
-            console.log(data); // successful response
-        queryDynamoDB();
+sqs.createQueue(params, function (err, data) {
+    if (err) console.log(err, err.stack); // an error occurred
+    else {
+        console.log('Successfully created SQS queue URL ' + data.QueueUrl); // successful response
+        queueUrl = data.QueueUrl;
+        waitingSQS = false;
+        createMessages(data.QueueUrl);
+    }
+});
+
+// Create 50 SQS messages
+function createMessages(queueUrl) {
+    var messages = [];
+    for (var a = 0; a < 5; a++) {
+        messages[a] = [];
+        for (var b = 0; b < 10; b++) {
+            messages[a][b] = 'This is the content for message ' + (a * 10 + b) + '.';
+        }
+    }
+    var a = 0;
+    // Asynchronously deliver messages to SQS queue
+    async.each(messages, function (content) {
+        console.log('Sending messages: ' + JSON.stringify(content))
+        params = {
+            Entries: [],
+            QueueUrl: queueUrl /* required */
+        };
+        for (var b = 0; b < 10; b++) {
+            params.Entries.push({
+                MessageBody: content[b],
+                Id: 'Message' + (a * 10 + b)
+            });
+        }
+        a++;
+        // Batch deliver messages to SQS queue
+        sqs.sendMessageBatch(params, function (err, data) {
+            if (err) console.log(err, err.stack); // an error occurred
+            else console.log(data); // successful response
+        });
     });
 }
 
-function queryDynamoDB() {
-    // Query DynamoDB table using JSON data
-    var params = {
-        TableName: 'test-table', /* required */
-        IndexName: 'ProductCategory-Price-index',
-        KeyConditionExpression: "ProductCategory = :prod_cat AND Price <= :price",
-        ExpressionAttributeValues: {
-            ":prod_cat": {"S": "Bike"},
-            ":price": {"N": "300"}
+// Poll queue for messages then process and delete
+var waitingSQS = false;
+var queueCounter = 0;
+setInterval(function () {
+    if (!waitingSQS) { // Still busy with previous request
+        if (queueCounter <= 0) {
+            receiveMessages();
         }
+        else --queueCounter; // Reduce queue counter
     }
-    db.query(params, function (err, data) {
-        if (err) console.log(err, err.stack); // an error occurred
-        else console.log(data.Items); // successful response
+}, 1000);
+
+// Receive messages from queue
+function receiveMessages() {
+    var params = {
+        QueueUrl: queueUrl, /* required */
+        MaxNumberOfMessages: 10,
+        VisibilityTimeout: 60,
+        WaitTimeSeconds: 20 // Wait for messages to arrive
+    };
+    waitingSQS = true;
+    sqs.receiveMessage(params, function (err, data) {
+        if (err) {
+            waitingSQS = false;
+            console.log(err, err.stack); // an error occurred
+        }
+        else {
+            waitingSQS = false;
+            if ((typeof data.Messages !== 'undefined') && (data.Messages.length !== 0)) {
+                console.log('Received ' + data.Messages.length
+                    + ' messages from SQS queue.'); // successful response
+                processMessages(data.Messages);
+            }
+            else {
+                queueCounter = 60; // Queue empty back of for 60s
+                console.log('SQS queue empty, waiting for ' + queueCounter + 's.');
+            }
+        }
+    });
+}
+
+// Process and delete messages from queue
+function processMessages(messagesSQS) {
+    async.each(messagesSQS, function (content) {
+        console.log('Processing message: ' + content.Body); // Do something with the message
+        var params = {
+            QueueUrl: queueUrl, /* required */
+            ReceiptHandle: content.ReceiptHandle /* required */
+        };
+        sqs.deleteMessage(params, function (err, data) {
+            if (err) console.log(err, err.stack); // an error occurred
+            else {
+                console.log('Deleted message RequestId: '
+                    + JSON.stringify(data.ResponseMetadata.RequestId)); // successful response
+            }
+        });
+    });
+}
+
+// Create an SNS messages
+var sns = new AWS.SNS();
+function createMessages() {
+    var message = 'This is a message from Amazon SNS';
+    console.log('Sending messages: ' + message);
+    sns.publish({
+        Message: message,
+        TargetArn: 'arn:aws:sns:us-east-1:767594695837:backspace-lab'
+    }, function (err, data) {
+        if (err) {
+            console.log(err.stack);
+        }
+        else {
+            console.log('Message sent by SNS: ' + data);
+        }
     });
 }
